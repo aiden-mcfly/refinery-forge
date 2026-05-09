@@ -25,7 +25,7 @@ All multi-byte integers are **little-endian**.
 
 1. `magic == REFINERY_MAGIC` (`0x31465248414C4553` — ASCII `SELAHRF1` on little-endian as typed `uint64_t`/byte order; writers must emit the constant from `substrate_interface.h`).
 2. `format_version == 1` (`REFINERY_FORMAT_VERSION_OPP51_1`).
-3. `marker_count <= REFINERY_MAX_MARKERS` (35528). Smaller counts allowed for tests.
+3. `marker_count <= REFINERY_MAX_MARKERS` (1200000). Smaller counts allowed for tests.
 4. Regions fit within the memory-mapped file and do not overlap.
 5. `canon_xxh64` equals **XXH64** over the canon bytes only, seed **0** (classic `XXH64()`, not XXH3).
 6. `reserved` in header is zero.

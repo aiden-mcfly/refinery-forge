@@ -19,8 +19,8 @@ extern "C" {
 /** Format version baked into binaries (OPP-51 track: deterministic refinery v1) */
 #define REFINERY_FORMAT_VERSION_OPP51_1 1u
 
-/** Production corpus verse count (OPP-49 sandbox); tests may use fewer */
-#define REFINERY_MAX_MARKERS 35528u
+/** Physical mesh ceiling for sliding-window spectroscopy under current v1 contract */
+#define REFINERY_MAX_MARKERS 1200000u
 
 /**
  * Portable 128-bit identity (xxHash128 digest or logical duplicate).

@@ -9,11 +9,25 @@ The OPP-49 canon pipeline lives under aiden-prime:
 - Node exporter: `INTELLIGENCE-CYCLE/bets/active/OPP-49-Jesus-Canon-Root/sandbox/way/canon-export.js`
 - C++ exporter: `sandbox/life/canon-export.cpp` → `life/substrate/verse-embeddings.bin`, `canon-index.bin`
 
-**Next implementation step (not shipped in v1 skeleton):**
+**Current forge surface:**
 
-1. Read `DATABASE_URL` / `AIDEN_DATABASE_URL` (same hopper pattern as `scripts/opp49-restricted-olive-palm-cosine-harness.js`).
-2. Export verse text in corpus order (35528 rows) into a single contiguous UTF-8 blob (or rebuild blob from `canon_verses` query).
-3. Run the same 7-word window + XXH128 logic as `bitmask_generator.cpp`, dedupe to static markers, emit `marker-index.bin` per `docs/SUBSTRATE-LAYOUT.md` in refinery-core.
+1. Read `DATABASE_URL` / `AIDEN_DATABASE_URL`.
+2. Query a single text column from `canon_verses` in corpus order.
+3. Rebuild one contiguous UTF-8 canon blob by joining rows with newline separators.
+4. Run the same 7-word window + XXH128 logic as `bitmask_generator.cpp`.
+5. Emit `marker-index.bin` only when the resulting marker set satisfies the frozen layout cap.
+6. Optionally emit a JSON evidence sidecar with corpus size and hash-distribution stats.
+
+**Default query:**
+
+```sql
+SELECT verse_text
+FROM canon_verses
+WHERE verse_text IS NOT NULL AND verse_text <> ''
+ORDER BY id
+```
+
+Use `--sql` to supply a stricter or schema-specific extraction query when needed.
 
 ## Outputs
 
