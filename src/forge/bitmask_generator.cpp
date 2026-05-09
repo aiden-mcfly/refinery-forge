@@ -212,11 +212,17 @@ BuildArtifacts build_markers(const CanonBuildResult& canon) {
         static_cast<size_t>((hid.low64 ^ hid.high64) & (kBucketCount - 1u));
     buckets[bucket] += 1u;
     if (uniq.count(hid)) continue;
+    if (span0 > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+      throw std::runtime_error("marker canon_offset exceeds uint32_t — SILENCE");
+    }
+    if (len > static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {
+      throw std::runtime_error("marker span_bytes exceeds uint16_t — SILENCE");
+    }
     Marker m{};
     m.hash_id = hid;
-    m.canon_offset = static_cast<uint64_t>(span0);
-    m.span_bytes = static_cast<uint32_t>(len);
-    std::memset(m.pad, 0, sizeof(m.pad));
+    m.canon_offset = static_cast<uint32_t>(span0);
+    m.span_bytes = static_cast<uint16_t>(len);
+    m.pad = 0;
     uniq.emplace(hid, m);
   }
 

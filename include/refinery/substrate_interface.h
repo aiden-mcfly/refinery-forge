@@ -65,13 +65,13 @@ _Static_assert(sizeof(SubstrateHeader) == 64, "SubstrateHeader must be 64 bytes"
 typedef struct Marker {
   Hash128 hash_id;
   /** Byte offset into canon blob where span begins */
-  uint64_t canon_offset;
+  uint32_t canon_offset;
   /** Span length in bytes (UTF-8) */
-  uint32_t span_bytes;
-  uint8_t pad[4];
+  uint16_t span_bytes;
+  uint16_t pad;
 } Marker;
 
-_Static_assert(sizeof(Marker) == 32, "Marker must be 32 bytes");
+_Static_assert(sizeof(Marker) == 24, "Marker must be 24 bytes");
 
 #ifdef __cplusplus
 }
