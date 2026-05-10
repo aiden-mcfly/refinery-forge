@@ -1,6 +1,10 @@
 /**
  * bitmask_generator — golden path: 7-word sliding windows → XXH128 markers + canon blob.
  * Postgres/JSON extraction lives in forge; core consumes only the frozen .bin.
+ *
+ * Tokenization, word cap, window size, magic, and hash construction all derive
+ * from substrate_interface.h. Forge MUST NOT redefine them locally — drift between
+ * forge and refinery-core kernel is a v1 contract violation.
  */
 #include "xxhash.h"
 
@@ -13,7 +17,6 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -31,7 +34,6 @@
 
 namespace {
 
-constexpr size_t kWindowWords = 7;
 constexpr size_t kBucketCount = 256;
 
 struct Hash128Cmp {
@@ -45,10 +47,17 @@ struct ForgeOptions {
   std::string out_path = "golden.marker.bin";
   std::string stats_out_path;
   std::string text;
+  /* Selah-tenant default: scripture_verses(text_quote) is the canonical verse
+   * column per SELAH-ZION schema (2026-05-10). canonical_position is a dense
+   * 1..N integer anchored to NABRE Catholic 73-book canon order, populated by
+   * the v1__anchor_canonical_position migration (verified 2026-05-10:
+   * 35,543 rows, MIN=1, MAX=35,543, 0 NULLs, 0 gaps, 0 duplicates;
+   * Gen 1:1 → 1, Rev 22:21 → 35,543). Source of truth for book ordering is
+   * CANONICAL_BOOKS in canon-export.js (per L-11). */
   std::string sql =
-      "SELECT verse_text FROM canon_verses "
-      "WHERE verse_text IS NOT NULL AND verse_text <> '' "
-      "ORDER BY id";
+      "SELECT text_quote FROM scripture_verses "
+      "WHERE text_quote IS NOT NULL AND text_quote <> '' "
+      "ORDER BY canonical_position";
   bool from_postgres = false;
   bool stats_only = false;
   bool have_text = false;
@@ -83,15 +92,29 @@ struct BuildArtifacts {
   BuildStats stats;
 };
 
-std::vector<std::pair<size_t, size_t>> word_spans_ascii(const std::string& s) {
+/**
+ * Tokenize per the shared algorithm spec:
+ *   - maximal runs of bytes for which refinery_word_byte() is true
+ *   - case preserved
+ *   - any single token >= REFINERY_MAX_WORD_BYTES collapses to SILENCE
+ *     (forge throws; main() catches and exits non-zero without emitting a .bin)
+ */
+std::vector<std::pair<size_t, size_t>> tokenize_canon(const std::string& s) {
   std::vector<std::pair<size_t, size_t>> out;
   size_t i = 0;
   const size_t n = s.size();
   while (i < n) {
-    while (i < n && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    while (i < n && !refinery_word_byte(static_cast<unsigned char>(s[i]))) ++i;
     if (i >= n) break;
-    size_t start = i;
-    while (i < n && !std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    const size_t start = i;
+    while (i < n && refinery_word_byte(static_cast<unsigned char>(s[i]))) ++i;
+    const size_t len = i - start;
+    if (len >= REFINERY_MAX_WORD_BYTES) {
+      throw std::runtime_error(
+          "word length " + std::to_string(len) +
+          " >= REFINERY_MAX_WORD_BYTES=" + std::to_string(REFINERY_MAX_WORD_BYTES) +
+          " — SILENCE (forge refuses to emit substrate)");
+    }
     out.emplace_back(start, i);
   }
   return out;
@@ -195,16 +218,31 @@ size_t percentile_bucket(std::array<uint32_t, kBucketCount> buckets, double pct)
 }
 
 BuildArtifacts build_markers(const CanonBuildResult& canon) {
-  const auto words = word_spans_ascii(canon.canon_utf8);
+  const auto words = tokenize_canon(canon.canon_utf8);
   std::map<Hash128, Marker, Hash128Cmp> uniq;
   std::array<uint32_t, kBucketCount> buckets{};
 
-  for (size_t i = 0; i + kWindowWords <= words.size(); ++i) {
-    const size_t span0 = words[i].first;
-    const size_t span1 = words[i + (kWindowWords - 1)].second;
-    const void* ptr = canon.canon_utf8.data() + span0;
-    const size_t len = span1 - span0;
-    const XXH128_hash_t h = XXH3_128bits(ptr, len);
+  /* Stack buffer sized to the spec ceiling. Same shape as the kernel's
+   * SpectroscopyRing flattened buffer so output bytes are bit-identical. */
+  constexpr size_t kFlattenedMax =
+      (REFINERY_WINDOW_WORDS * REFINERY_MAX_WORD_BYTES) + (REFINERY_WINDOW_WORDS - 1u);
+  char flat[kFlattenedMax];
+
+  for (size_t i = 0; i + REFINERY_WINDOW_WORDS <= words.size(); ++i) {
+    /* Construct flattened buffer per shared algorithm spec:
+     *   token[i] ++ 0x20 ++ token[i+1] ++ 0x20 ++ ... ++ token[i+6]
+     * (no leading/trailing 0x20; exactly 6 separators between 7 tokens). */
+    size_t off = 0;
+    for (size_t j = 0; j < REFINERY_WINDOW_WORDS; ++j) {
+      const auto& w = words[i + j];
+      const size_t len = w.second - w.first;
+      std::memcpy(flat + off, canon.canon_utf8.data() + w.first, len);
+      off += len;
+      if (j + 1u < REFINERY_WINDOW_WORDS) {
+        flat[off++] = ' ';
+      }
+    }
+    const XXH128_hash_t h = XXH3_128bits(flat, off);
     Hash128 hid{};
     hid.low64 = h.low64;
     hid.high64 = h.high64;
@@ -212,16 +250,20 @@ BuildArtifacts build_markers(const CanonBuildResult& canon) {
         static_cast<size_t>((hid.low64 ^ hid.high64) & (kBucketCount - 1u));
     buckets[bucket] += 1u;
     if (uniq.count(hid)) continue;
+
+    const size_t span0 = words[i].first;
+    const size_t span1 = words[i + (REFINERY_WINDOW_WORDS - 1)].second;
     if (span0 > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
       throw std::runtime_error("marker canon_offset exceeds uint32_t — SILENCE");
     }
-    if (len > static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {
+    const size_t total_span = span1 - span0;
+    if (total_span > static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {
       throw std::runtime_error("marker span_bytes exceeds uint16_t — SILENCE");
     }
     Marker m{};
     m.hash_id = hid;
     m.canon_offset = static_cast<uint32_t>(span0);
-    m.span_bytes = static_cast<uint16_t>(len);
+    m.span_bytes = static_cast<uint16_t>(total_span);
     m.pad = 0;
     uniq.emplace(hid, m);
   }
@@ -238,7 +280,8 @@ BuildArtifacts build_markers(const CanonBuildResult& canon) {
   stats.canon_bytes = canon.canon_utf8.size();
   stats.row_count = canon.row_count;
   stats.word_count = words.size();
-  stats.window_count = words.size() >= kWindowWords ? words.size() - (kWindowWords - 1) : 0;
+  stats.window_count =
+      words.size() >= REFINERY_WINDOW_WORDS ? words.size() - (REFINERY_WINDOW_WORDS - 1) : 0;
   stats.unique_markers = markers.size();
   stats.duplicate_windows = stats.window_count >= stats.unique_markers
                                 ? stats.window_count - stats.unique_markers
@@ -325,7 +368,7 @@ int write_marker_index_file(const char* path, const std::string& canon_utf8,
   std::vector<uint8_t> buf(total_size, 0);
 
   SubstrateHeader hdr{};
-  hdr.magic = REFINERY_MAGIC;
+  std::memcpy(hdr.magic, REFINERY_MAGIC_STR, REFINERY_MAGIC_LEN);
   hdr.format_version = REFINERY_FORMAT_VERSION_OPP51_1;
   hdr.marker_count = static_cast<uint32_t>(markers.size());
   hdr.canon_xxh64 = canon_xxh;
@@ -355,11 +398,13 @@ int write_marker_index_file(const char* path, const std::string& canon_utf8,
 }
 
 #if defined(REFINERY_HAVE_LIBPQ)
+/* Selah is the source of truth (per project_instructions: "A valid object in
+ * the wrong tenant is invalid"). AIDEN was a downstream projection and is no
+ * longer a lawful source. Forge resolves SELAH_DATABASE_URL only — generic
+ * DATABASE_URL is rejected to prevent accidental wrong-tenant queries. */
 std::string resolve_database_url() {
-  for (const char* key : {"DATABASE_URL", "AIDEN_DATABASE_URL"}) {
-    const char* value = std::getenv(key);
-    if (value && *value) return value;
-  }
+  const char* value = std::getenv("SELAH_DATABASE_URL");
+  if (value && *value) return value;
   return {};
 }
 
@@ -369,7 +414,7 @@ CanonBuildResult load_canon_from_postgres(const ForgeOptions& opts) {
 
   const std::string db_url = resolve_database_url();
   if (db_url.empty()) {
-    throw std::runtime_error("DATABASE_URL/AIDEN_DATABASE_URL is not set");
+    throw std::runtime_error("SELAH_DATABASE_URL is not set");
   }
 
   PGconn* conn = PQconnectdb(db_url.c_str());
@@ -444,9 +489,10 @@ int main(int argc, char** argv) {
 
   try {
     const CanonBuildResult canon = load_canon(opts);
-    const auto words = word_spans_ascii(canon.canon_utf8);
-    if (words.size() < kWindowWords) {
-      std::cerr << "canon must contain at least 7 whitespace-separated words\n";
+    const auto words = tokenize_canon(canon.canon_utf8);
+    if (words.size() < REFINERY_WINDOW_WORDS) {
+      std::cerr << "canon must contain at least " << REFINERY_WINDOW_WORDS
+                << " word-class tokens\n";
       return 2;
     }
 

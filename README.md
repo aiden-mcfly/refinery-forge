@@ -15,32 +15,52 @@ Options: `--out <path>`, `--text "<utf-8 canon>"` (must contain at least seven w
 
 ## Postgres extraction and evidence
 
-When built with `libpq`, Forge can extract a corpus directly from `canon_verses` and emit
-distribution evidence before writing a lawful substrate:
+When built with `libpq`, Forge can extract the canon directly from selah's `scripture_verses`
+table and emit distribution evidence before writing a lawful substrate. Selah is the source
+of truth — forge resolves `SELAH_DATABASE_URL` **only** (no generic `DATABASE_URL`, no
+`AIDEN_DATABASE_URL`). Per project doctrine: *"A valid object in the wrong tenant is invalid"*.
+
+Build with libpq linked:
 
 ```bash
-cmake -S . -B build
-cmake --build build
-DATABASE_URL=postgres://... ./build/refinery-forge \
+clang++ -std=c++20 -O2 -Wall -Wextra \
+  -DREFINERY_HAVE_LIBPQ=1 \
+  -I include -I third_party/xxhash \
+  -I /opt/homebrew/opt/libpq/include \
+  src/forge/bitmask_generator.cpp build/xxhash.o \
+  -L /opt/homebrew/opt/libpq/lib -lpq \
+  -o build/refinery-forge
+```
+
+Run (read SELAH_DATABASE_URL from a chmod-600 file, never inline):
+
+```bash
+set -a; source ~/.config/selah/db.env; set +a   # contents: SELAH_DATABASE_URL=...
+./build/refinery-forge \
   --from-postgres \
   --limit 512 \
   --out golden-set.marker.bin \
   --stats \
   --stats-out golden-set.stats.json
+unset SELAH_DATABASE_URL
 ```
 
 Default SQL:
 
 ```sql
-SELECT verse_text
-FROM canon_verses
-WHERE verse_text IS NOT NULL AND verse_text <> ''
-ORDER BY id
+SELECT text_quote
+FROM scripture_verses
+WHERE text_quote IS NOT NULL AND text_quote <> ''
+ORDER BY ref
 ```
 
-Use `--sql "<query>"` to override the source query. The query must return exactly one text
-column. If the generated marker set exceeds `REFINERY_MAX_MARKERS`, Forge refuses to emit an
-invalid `.bin` and exits with `SILENCE` semantics after reporting the evidence.
+`ORDER BY ref` is deterministic (alphabetic on the text primary key) but **not canonical
+scripture order**. Use `--sql "<query>"` to override with a CASE-mapped book ordering when
+canonical order matters. The query must return exactly one text column. If the generated
+marker set exceeds `REFINERY_MAX_MARKERS`, Forge refuses to emit an invalid `.bin` and exits
+with `SILENCE` semantics after reporting the evidence.
+
+See [`docs/FORGE-POSTGRES.md`](docs/FORGE-POSTGRES.md) for the selah schema and override patterns.
 
 ## Postgres / JSON extraction
 
