@@ -55,14 +55,22 @@ Default SQL:
 SELECT text_quote
 FROM scripture_verses
 WHERE text_quote IS NOT NULL AND text_quote <> ''
+ORDER BY canonical_position
+```
+
+`canonical_position` is the canonical Selah ordering and is the default substrate read path.
+If you intentionally want a lexical stress-test ordering instead, override with `--sql`:
+
+```sql
+SELECT text_quote
+FROM scripture_verses
+WHERE text_quote IS NOT NULL AND text_quote <> ''
 ORDER BY ref
 ```
 
-`ORDER BY ref` is deterministic (alphabetic on the text primary key) but **not canonical
-scripture order**. Use `--sql "<query>"` to override with a CASE-mapped book ordering when
-canonical order matters. The query must return exactly one text column. If the generated
-marker set exceeds `REFINERY_MAX_MARKERS`, Forge refuses to emit an invalid `.bin` and exits
-with `SILENCE` semantics after reporting the evidence.
+The query must return exactly one text column. If the generated marker set exceeds
+`REFINERY_MAX_MARKERS`, Forge refuses to emit an invalid `.bin` and exits with `SILENCE`
+semantics after reporting the evidence.
 
 See [`docs/FORGE-POSTGRES.md`](docs/FORGE-POSTGRES.md) for the selah schema and override patterns.
 
