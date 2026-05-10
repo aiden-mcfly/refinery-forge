@@ -11,7 +11,11 @@ clang++ -std=c++20 -O2 -I include -I third_party/xxhash \
 ./build/refinery-forge --out marker.bin
 ```
 
-Options: `--out <path>`, `--text "<utf-8 canon>"` (must contain at least seven whitespace-separated words).
+After changing tokenizer or header constants, confirm parity: `./scripts/verify-golden.sh`
+(rebuilds forge and compares `golden.marker.bin` to the default embedded canon).
+
+Options: `--out <path>`, `--text "<utf-8 canon>"` (must yield at least seven tokens per
+`refinery_word_byte()` in `include/refinery/substrate_interface.h`).
 
 ## Postgres extraction and evidence
 
