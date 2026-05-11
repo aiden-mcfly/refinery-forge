@@ -32,7 +32,11 @@
 #include <string_view>
 #include <vector>
 
+#include <unistd.h>
+
 namespace {
+
+const char* g_argv0 = nullptr;
 
 constexpr size_t kBucketCount = 256;
 
@@ -133,6 +137,106 @@ std::optional<int> parse_int(const char* s) {
     return std::nullopt;
   }
   return static_cast<int>(value);
+}
+
+std::string refinery_dirname(std::string_view path) {
+  const size_t slash = path.find_last_of('/');
+  if (slash == std::string_view::npos) return ".";
+  if (slash == 0u) return "/";
+  return std::string(path.substr(0u, slash));
+}
+
+std::string refinery_basename(std::string_view path) {
+  const size_t slash = path.find_last_of('/');
+  if (slash == std::string_view::npos) return std::string(path);
+  return std::string(path.substr(slash + 1u));
+}
+
+std::string refinery_canonicalize_existing_path(const std::string& path) {
+  char* resolved = realpath(path.c_str(), nullptr);
+  if (resolved == nullptr) {
+    throw std::runtime_error("failed to canonicalize path: " + path +
+                             " (" + std::strerror(errno) + ")");
+  }
+  const std::string out(resolved);
+  std::free(resolved);
+  return out;
+}
+
+std::string refinery_canonicalize_path(const std::string& target_path) {
+  errno = 0;
+  char* resolved = realpath(target_path.c_str(), nullptr);
+  if (resolved != nullptr) {
+    const std::string out(resolved);
+    std::free(resolved);
+    return out;
+  }
+  if (errno != ENOENT) {
+    throw std::runtime_error("failed to canonicalize target path: " + target_path +
+                             " (" + std::strerror(errno) + ")");
+  }
+
+  const std::string parent = refinery_dirname(target_path);
+  const std::string base = refinery_basename(target_path);
+  const std::string canonical_parent = refinery_canonicalize_existing_path(parent);
+  if (canonical_parent == "/") return canonical_parent + base;
+  return canonical_parent + "/" + base;
+}
+
+std::string refinery_resolve_manifest_path(const char* argv0) {
+  const char* env = std::getenv("REFINERY_SUBSTRATE_MANIFEST");
+  if (env && *env) {
+    if (access(env, R_OK) == 0) return env;
+    throw std::runtime_error("L-F-02: REFINERY_SUBSTRATE_MANIFEST is set but unreadable: " +
+                             std::string(env));
+  }
+
+  const char* cwd_candidates[] = {
+      ".active-substrate-paths",
+      "refinery-core/.active-substrate-paths",
+  };
+  for (const char* candidate : cwd_candidates) {
+    if (access(candidate, R_OK) == 0) return candidate;
+  }
+
+  if (argv0 && *argv0) {
+    try {
+      const std::string exe_path = refinery_canonicalize_existing_path(argv0);
+      const std::string exe_dir = refinery_dirname(exe_path);
+      const std::string fallback =
+          refinery_dirname(exe_dir) + "/refinery-core/.active-substrate-paths";
+      if (access(fallback.c_str(), R_OK) == 0) return fallback;
+    } catch (const std::exception&) {
+    }
+  }
+
+  return {};
+}
+
+bool refinery_path_is_protected(const std::string& target_path,
+                                const std::string& manifest_path) {
+  const std::string canonical_target = refinery_canonicalize_path(target_path);
+  std::ifstream manifest(manifest_path);
+  if (!manifest) {
+    throw std::runtime_error("L-F-02: failed to open manifest: " + manifest_path);
+  }
+
+  std::string line;
+  while (std::getline(manifest, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const size_t first = line.find_first_not_of(" \t");
+    if (first == std::string::npos) continue;
+    if (line[first] == '#') continue;
+    const size_t last = line.find_last_not_of(" \t");
+    const std::string entry = line.substr(first, last - first + 1u);
+    if (entry.empty()) continue;
+    try {
+      if (refinery_canonicalize_existing_path(entry) == canonical_target) return true;
+    } catch (const std::exception&) {
+      continue;
+    }
+  }
+  return false;
 }
 
 void print_usage() {
@@ -344,6 +448,9 @@ void print_stats(const BuildStats& stats) {
             << "bucket_p99=" << stats.p99_bucket << '\n';
 }
 
+/* L-F-02 guard: forge may stage candidate substrate files, but it must refuse
+ * to overwrite any operator-declared live kernel substrate path. Exit code 4
+ * is reserved for protected-path refusal. */
 int write_marker_index_file(const char* path, const std::string& canon_utf8,
                             const std::vector<Marker>& markers, uint64_t canon_xxh) {
   if (markers.empty()) {
@@ -364,6 +471,17 @@ int write_marker_index_file(const char* path, const std::string& canon_utf8,
       align8(static_cast<size_t>(markers_offset + markers_bytes));
   const uint64_t canon_size = canon_utf8.size();
   const size_t total_size = static_cast<size_t>(canon_offset + canon_size);
+
+  const std::string manifest = refinery_resolve_manifest_path(g_argv0);
+  if (!manifest.empty() && refinery_path_is_protected(path, manifest)) {
+    std::cerr << "L-F-02 VIOLATION: target path " << path
+              << " canonicalizes to a protected entry in " << manifest
+              << " — refusing to overwrite live kernel substrate. SILENCE.\n";
+    return 4;
+  }
+  if (manifest.empty()) {
+    std::cerr << "L-F-02: no active-substrate manifest found; protected-path check skipped\n";
+  }
 
   std::vector<uint8_t> buf(total_size, 0);
 
@@ -481,6 +599,7 @@ CanonBuildResult load_canon(const ForgeOptions& opts) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  g_argv0 = (argc > 0) ? argv[0] : nullptr;
   ForgeOptions opts;
   if (!parse_args(argc, argv, &opts)) {
     print_usage();

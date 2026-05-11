@@ -17,6 +17,13 @@ After changing tokenizer or header constants, confirm parity: `./scripts/verify-
 Options: `--out <path>`, `--text "<utf-8 canon>"` (must yield at least seven tokens per
 `refinery_word_byte()` in `include/refinery/substrate_interface.h`).
 
+Protected-path guard: if an operator manifest marks the target path as active/live, forge
+refuses to overwrite it and exits with code `4` after printing `L-F-02 VIOLATION...` to
+stderr. If no manifest is found, forge emits a single `L-F-02: no active-substrate manifest
+found; protected-path check skipped` warning and proceeds. Protection is deploy-opt-in via
+`REFINERY_SUBSTRATE_MANIFEST`, `./.active-substrate-paths`, `./refinery-core/.active-substrate-paths`,
+or the executable-relative sibling fallback.
+
 ## Postgres extraction and evidence
 
 When built with `libpq`, Forge can extract the canon directly from selah's `scripture_verses`
