@@ -9,6 +9,7 @@ find_package(PostgreSQL)
 add_executable(refinery-forge
   src/forge/bitmask_generator.cpp
   src/forge/ledger.cpp
+  src/forge/substrate_emit.cpp
   src/forge/tank.cpp
   third_party/xxhash/xxhash.c
 )

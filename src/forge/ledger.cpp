@@ -4,12 +4,18 @@
 
 #include <cerrno>
 #include <cstdlib>
-#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <vector>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace refinery_forge {
 namespace {
@@ -17,28 +23,6 @@ namespace {
 void append_bytes(std::vector<unsigned char>* out, const void* data, size_t len) {
   const auto* p = static_cast<const unsigned char*>(data);
   out->insert(out->end(), p, p + len);
-}
-
-bool read_last_entry(const std::string& path, LedgerEntry* out, uint64_t* count) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    *count = 0;
-    std::memset(out, 0, sizeof(*out));
-    return true;
-  }
-  in.seekg(0, std::ios::end);
-  const std::streamoff bytes = in.tellg();
-  if (bytes < 0 || (bytes % static_cast<std::streamoff>(sizeof(LedgerEntry))) != 0) {
-    return false;
-  }
-  *count = static_cast<uint64_t>(bytes / static_cast<std::streamoff>(sizeof(LedgerEntry)));
-  if (*count == 0u) {
-    std::memset(out, 0, sizeof(*out));
-    return true;
-  }
-  in.seekg(static_cast<std::streamoff>((*count - 1u) * sizeof(LedgerEntry)), std::ios::beg);
-  in.read(reinterpret_cast<char*>(out), static_cast<std::streamsize>(sizeof(*out)));
-  return static_cast<bool>(in);
 }
 
 Hash128 compute_entry_id(uint32_t event_type,
@@ -93,6 +77,60 @@ std::string read_path_file(const char* path_file) {
   }
   return {};
 }
+
+int read_last_entry_locked(int fd, LedgerEntry* out, uint64_t* count, std::string* error) {
+  struct stat st {};
+  if (fstat(fd, &st) != 0) {
+    if (error) *error = "L-R-01: failed to stat evidence ledger";
+    return 5;
+  }
+  const off_t bytes = st.st_size;
+  if (bytes < 0) {
+    if (error) *error = "L-R-01: failed to stat evidence ledger";
+    return 5;
+  }
+  const size_t entry_size = sizeof(LedgerEntry);
+  const off_t rem = bytes % static_cast<off_t>(entry_size);
+  if (rem != 0) {
+    if (error) {
+      *error = "L-R-01: torn ledger (size=" + std::to_string(static_cast<long long>(bytes)) +
+               ", entry=" + std::to_string(entry_size) + ", remainder=" +
+               std::to_string(static_cast<long long>(rem)) +
+               "); manual repair required; refusing to append";
+    }
+    return 12;
+  }
+  *count = static_cast<uint64_t>(bytes / static_cast<off_t>(entry_size));
+  if (*count == 0u) {
+    std::memset(out, 0, sizeof(*out));
+    return 0;
+  }
+  const off_t last_off = bytes - static_cast<off_t>(entry_size);
+  const ssize_t got =
+      pread(fd, out, static_cast<size_t>(entry_size), last_off);
+  if (got != static_cast<ssize_t>(entry_size)) {
+    if (error) *error = "L-R-01: failed to read last evidence ledger entry";
+    return 5;
+  }
+  if (std::memcmp(out->magic, REFINERY_LEDGER_MAGIC_STR, REFINERY_LEDGER_MAGIC_LEN) != 0) {
+    if (error) *error = "L-R-01: malformed evidence ledger";
+    return 5;
+  }
+  return 0;
+}
+
+#ifdef REFINERY_LEDGER_DEBUG_RACE
+void maybe_debug_race_delay() {
+  const char* delay = std::getenv("REFINERY_LEDGER_DEBUG_RACE_DELAY_US");
+  if (delay == nullptr || *delay == '\0') return;
+  char* end = nullptr;
+  const unsigned long value = std::strtoul(delay, &end, 10);
+  if (end == nullptr || *end != '\0' || value == 0ul) return;
+  usleep(static_cast<useconds_t>(value));
+}
+#else
+void maybe_debug_race_delay() {}
+#endif
 
 }  // namespace
 
@@ -153,23 +191,42 @@ std::string refinery_resolve_ledger_path() {
   return {};
 }
 
-int refinery_emit_ledger_entry(const std::string& ledger_path,
-                               LedgerEventType event_type,
-                               const Hash128& subject_hash,
-                               const Hash128& evidence_hash,
-                               Hash128* out_entry_id,
-                               std::string* error) {
+int refinery_ledger_open_locked(const std::string& ledger_path, int* out_fd, std::string* error) {
   if (ledger_path.empty()) {
     if (error) *error = "L-R-01: no evidence ledger path configured; refusing state-changing operation";
     return 5;
   }
-
-  LedgerEntry previous{};
-  uint64_t count = 0;
-  if (!read_last_entry(ledger_path, &previous, &count)) {
-    if (error) *error = "L-R-01: malformed evidence ledger";
+  const int fd = open(ledger_path.c_str(), O_RDWR | O_CREAT, 0600);
+  if (fd < 0) {
+    if (error) *error = "L-R-01: failed to open evidence ledger";
     return 5;
   }
+  if (flock(fd, LOCK_EX) != 0) {
+    if (error) *error = "L-R-01: failed to lock evidence ledger";
+    close(fd);
+    return 5;
+  }
+  *out_fd = fd;
+  return 0;
+}
+
+void refinery_ledger_close_locked(int fd) {
+  if (fd < 0) return;
+  flock(fd, LOCK_UN);
+  close(fd);
+}
+
+int refinery_ledger_prepare_entry_locked(int fd, LedgerEventType event_type,
+                                         const Hash128& subject_hash,
+                                         const Hash128& evidence_hash,
+                                         LedgerEntry* out_entry,
+                                         std::string* error) {
+  LedgerEntry previous{};
+  uint64_t count = 0;
+  const int rc = read_last_entry_locked(fd, &previous, &count, error);
+  if (rc != 0) return rc;
+
+  maybe_debug_race_delay();
 
   LedgerEntry entry{};
   std::memcpy(entry.magic, REFINERY_LEDGER_MAGIC_STR, REFINERY_LEDGER_MAGIC_LEN);
@@ -182,20 +239,47 @@ int refinery_emit_ledger_entry(const std::string& ledger_path,
   entry.entry_id = compute_entry_id(entry.event_type, entry.subject_hash,
                                     entry.evidence_hash, entry.prev_entry_id,
                                     entry.sequence);
+  *out_entry = entry;
+  return 0;
+}
 
-  std::ofstream out(ledger_path, std::ios::binary | std::ios::app);
-  if (!out) {
-    if (error) *error = "L-R-01: failed to open evidence ledger";
+int refinery_ledger_append_entry_locked(int fd, const LedgerEntry& entry, std::string* error) {
+  const off_t off = lseek(fd, 0, SEEK_END);
+  if (off < 0) {
+    if (error) *error = "L-R-01: failed to seek evidence ledger";
     return 5;
   }
-  out.write(reinterpret_cast<const char*>(&entry), static_cast<std::streamsize>(sizeof(entry)));
-  out.flush();
-  if (!out) {
+  const ssize_t wrote = write(fd, &entry, sizeof(entry));
+  if (wrote != static_cast<ssize_t>(sizeof(entry))) {
     if (error) *error = "L-R-01: failed to append evidence ledger entry";
     return 5;
   }
-  if (out_entry_id) *out_entry_id = entry.entry_id;
+  if (fsync(fd) != 0) {
+    if (error) *error = "L-R-01: failed to fsync evidence ledger";
+    return 5;
+  }
   return 0;
+}
+
+int refinery_emit_ledger_entry(const std::string& ledger_path,
+                               LedgerEventType event_type,
+                               const Hash128& subject_hash,
+                               const Hash128& evidence_hash,
+                               Hash128* out_entry_id,
+                               std::string* error) {
+  int fd = -1;
+  int rc = refinery_ledger_open_locked(ledger_path, &fd, error);
+  if (rc != 0) return rc;
+
+  LedgerEntry entry{};
+  rc = refinery_ledger_prepare_entry_locked(fd, event_type, subject_hash, evidence_hash,
+                                            &entry, error);
+  if (rc == 0) {
+    rc = refinery_ledger_append_entry_locked(fd, entry, error);
+  }
+  refinery_ledger_close_locked(fd);
+  if (rc == 0 && out_entry_id) *out_entry_id = entry.entry_id;
+  return rc;
 }
 
 bool refinery_ledger_has_event(const std::string& ledger_path,

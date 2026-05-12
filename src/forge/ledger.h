@@ -19,6 +19,15 @@ bool refinery_parse_hash(std::string_view text, Hash128* out);
 
 std::string refinery_resolve_ledger_path();
 
+int refinery_ledger_open_locked(const std::string& ledger_path, int* out_fd, std::string* error);
+void refinery_ledger_close_locked(int fd);
+int refinery_ledger_prepare_entry_locked(int fd, LedgerEventType event_type,
+                                         const Hash128& subject_hash,
+                                         const Hash128& evidence_hash,
+                                         LedgerEntry* out_entry,
+                                         std::string* error);
+int refinery_ledger_append_entry_locked(int fd, const LedgerEntry& entry, std::string* error);
+
 int refinery_emit_ledger_entry(const std::string& ledger_path,
                                LedgerEventType event_type,
                                const Hash128& subject_hash,

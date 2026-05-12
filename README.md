@@ -7,7 +7,8 @@ Tooling that **extracts** legacy probabilistic substrate (Postgres, JSON, float 
 ```bash
 clang -std=c11 -O2 -c third_party/xxhash/xxhash.c -I third_party/xxhash -o build/xxhash.o
 clang++ -std=c++20 -O2 -I include -I third_party/xxhash \
-  src/forge/bitmask_generator.cpp src/forge/ledger.cpp src/forge/tank.cpp \
+  src/forge/bitmask_generator.cpp src/forge/ledger.cpp \
+  src/forge/substrate_emit.cpp src/forge/tank.cpp \
   build/xxhash.o -o build/refinery-forge
 ./build/refinery-forge --out marker.bin
 ```
@@ -31,9 +32,15 @@ State-changing operations require an evidence ledger path and an entropy tank pa
 Use `REFINERY_EVIDENCE_LEDGER` / `REFINERY_ENTROPY_TANK`, or copy the core repo
 examples to `refinery-core/.evidence-ledger-path` and `refinery-core/.entropy-tank-path`.
 The ledger is deterministic binary evidence; the tank is forge-owned producer storage.
-Core never reads either artifact at runtime. `--promote-tank-to-substrate` currently
-emits an identity-only substrate artifact for direct `Hash128` lookup; it is not a
-normal ingress-spectroscopy mesh over witness text.
+Core never reads either artifact at runtime. **Tank v2** (`SELAHTN2`, see
+`tank_interface.h`) stores the witnessed signal text per entry; for a **single**
+`UN_REFUTED` entry, `--promote-tank-to-substrate` routes that text through the same
+`refinery_emit_substrate_from_text` path as `--text`, so the promoted `.bin` is
+**byte-identical** to `refinery-forge --text "<same canon>" --out …` and is
+**ingress-spectroscopy-reachable** (kernel HIT). **v1** legacy tanks (`SELAHTNK`)
+refuse new witness/refute/reject/evict (**exit 9**); promotion falls back to
+identity-only mode with a stderr warning. Multi-entry v2 promotion is **exit 10**
+until an aggregation rule is ratified.
 
 ```bash
 export REFINERY_EVIDENCE_LEDGER=~/.config/refinery/evidence-ledger
@@ -47,9 +54,12 @@ REFINERY_REFUTER_ID=refuter-B ./build/refinery-forge --refute "$SUBJECT" --evide
 ./build/refinery-forge --promote-tank-to-substrate "$REFINERY_ENTROPY_TANK" promoted.marker.bin
 ```
 
-Return codes: `4` protected path refusal, `5` evidence-ledger failure, `6` tank failure,
-`7` invalid refutation/evidence request, `8` promotion blocked by insufficient refutation
-coverage.
+Return codes: `4` protected path refusal; `5` evidence-ledger failure; `6` tank failure;
+`7` invalid refutation/eviction/evidence request; `8` promotion blocked (e.g. `PENDING`
+or insufficient refutation coverage); `9` v1 tank — state ops refused (promote may warn
+and use identity-only path); `10` multi-entry v2 tank promotion not specified; `11` tank
+format/header/canon validation failure; `12` torn or malformed ledger (non-zero size
+not a multiple of 88 bytes).
 
 ## Postgres extraction and evidence
 
@@ -65,7 +75,8 @@ clang++ -std=c++20 -O2 -Wall -Wextra \
   -DREFINERY_HAVE_LIBPQ=1 \
   -I include -I third_party/xxhash \
   -I /opt/homebrew/opt/libpq/include \
-  src/forge/bitmask_generator.cpp src/forge/ledger.cpp src/forge/tank.cpp build/xxhash.o \
+  src/forge/bitmask_generator.cpp src/forge/ledger.cpp \
+  src/forge/substrate_emit.cpp src/forge/tank.cpp build/xxhash.o \
   -L /opt/homebrew/opt/libpq/lib -lpq \
   -o build/refinery-forge
 ```
