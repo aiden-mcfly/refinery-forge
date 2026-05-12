@@ -4,8 +4,8 @@
 #include "ledger.h"
 #include "refinery/tank_interface.h"
 
+#include <cstddef>
 #include <string>
-#include <vector>
 
 namespace refinery_forge {
 
@@ -48,9 +48,11 @@ int refinery_tank_evict(const std::string& tank_path,
                         TankOpResult* result,
                         std::string* error);
 
-int refinery_tank_promotable_hashes(const std::string& tank_path,
-                                    std::vector<Hash128>* out,
-                                    std::string* error);
+int refinery_tank_promote_to_substrate(const std::string& tank_path,
+                                       const std::string& ledger_path,
+                                       const std::string& substrate_path,
+                                       const char* argv0,
+                                       std::string* error);
 
 }  // namespace refinery_forge
 
