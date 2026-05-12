@@ -8,6 +8,8 @@ find_package(PostgreSQL)
 
 add_executable(refinery-forge
   src/forge/bitmask_generator.cpp
+  src/forge/ledger.cpp
+  src/forge/tank.cpp
   third_party/xxhash/xxhash.c
 )
 set_source_files_properties(third_party/xxhash/xxhash.c PROPERTIES LANGUAGE C)

@@ -8,7 +8,9 @@
  */
 #include "xxhash.h"
 
+#include "ledger.h"
 #include "refinery/substrate_interface.h"
+#include "tank.h"
 
 #if defined(REFINERY_HAVE_LIBPQ)
 #include <libpq-fe.h>
@@ -40,6 +42,16 @@ const char* g_argv0 = nullptr;
 
 constexpr size_t kBucketCount = 256;
 
+enum class ForgeOperation {
+  EmitSubstrate,
+  HashText,
+  Witness,
+  Refute,
+  Reject,
+  Evict,
+  PromoteTankToSubstrate,
+};
+
 struct Hash128Cmp {
   bool operator()(const Hash128& a, const Hash128& b) const {
     if (a.high64 != b.high64) return a.high64 < b.high64;
@@ -48,9 +60,16 @@ struct Hash128Cmp {
 };
 
 struct ForgeOptions {
+  ForgeOperation operation = ForgeOperation::EmitSubstrate;
   std::string out_path = "golden.marker.bin";
   std::string stats_out_path;
   std::string text;
+  std::string subject_hash_text;
+  std::string evidence;
+  std::string refuter_id;
+  std::string refutation_event_id_text;
+  std::string promote_tank_path;
+  std::string promote_substrate_path;
   /* Selah-tenant default: scripture_verses(text_quote) is the canonical verse
    * column per SELAH-ZION schema (2026-05-10). canonical_position is a dense
    * 1..N integer anchored to NABRE Catholic 73-book canon order, populated by
@@ -65,7 +84,9 @@ struct ForgeOptions {
   bool from_postgres = false;
   bool stats_only = false;
   bool have_text = false;
+  bool have_out_path = false;
   bool print_stats = false;
+  bool refutation_succeeds = false;
   int limit = -1;
 };
 
@@ -243,7 +264,22 @@ void print_usage() {
   std::cout
       << "usage: refinery-forge [--out path] [--text \"canon utf-8\"]\n"
       << "                      [--from-postgres] [--sql query] [--limit N]\n"
-      << "                      [--stats] [--stats-out path] [--stats-only]\n";
+      << "                      [--stats] [--stats-out path] [--stats-only]\n"
+      << "       refinery-forge --hash-text \"signal\"\n"
+      << "       refinery-forge --witness \"signal\"\n"
+      << "       refinery-forge --reject <subject-hash>\n"
+      << "       refinery-forge --refute <subject-hash> --evidence \"bytes\" [--refuter id] [--succeeds]\n"
+      << "       refinery-forge --evict <subject-hash> --refutation-event-id <event-id>\n"
+      << "       refinery-forge --promote-tank-to-substrate <tank> <substrate>\n";
+}
+
+bool set_operation(ForgeOptions* opts, ForgeOperation operation) {
+  if (opts->operation != ForgeOperation::EmitSubstrate) {
+    std::cerr << "choose exactly one state operation\n";
+    return false;
+  }
+  opts->operation = operation;
+  return true;
 }
 
 bool parse_args(int argc, char** argv, ForgeOptions* opts) {
@@ -251,6 +287,7 @@ bool parse_args(int argc, char** argv, ForgeOptions* opts) {
     std::string a = argv[i];
     if (a == "--out" && i + 1 < argc) {
       opts->out_path = argv[++i];
+      opts->have_out_path = true;
     } else if (a == "--text" && i + 1 < argc) {
       opts->text = argv[++i];
       opts->have_text = true;
@@ -272,6 +309,35 @@ bool parse_args(int argc, char** argv, ForgeOptions* opts) {
     } else if (a == "--stats-only") {
       opts->stats_only = true;
       opts->print_stats = true;
+    } else if (a == "--hash-text" && i + 1 < argc) {
+      if (!set_operation(opts, ForgeOperation::HashText)) return false;
+      opts->text = argv[++i];
+      opts->have_text = true;
+    } else if (a == "--witness" && i + 1 < argc) {
+      if (!set_operation(opts, ForgeOperation::Witness)) return false;
+      opts->text = argv[++i];
+      opts->have_text = true;
+    } else if (a == "--reject" && i + 1 < argc) {
+      if (!set_operation(opts, ForgeOperation::Reject)) return false;
+      opts->subject_hash_text = argv[++i];
+    } else if (a == "--refute" && i + 1 < argc) {
+      if (!set_operation(opts, ForgeOperation::Refute)) return false;
+      opts->subject_hash_text = argv[++i];
+    } else if (a == "--evidence" && i + 1 < argc) {
+      opts->evidence = argv[++i];
+    } else if (a == "--refuter" && i + 1 < argc) {
+      opts->refuter_id = argv[++i];
+    } else if (a == "--succeeds") {
+      opts->refutation_succeeds = true;
+    } else if (a == "--evict" && i + 1 < argc) {
+      if (!set_operation(opts, ForgeOperation::Evict)) return false;
+      opts->subject_hash_text = argv[++i];
+    } else if (a == "--refutation-event-id" && i + 1 < argc) {
+      opts->refutation_event_id_text = argv[++i];
+    } else if (a == "--promote-tank-to-substrate" && i + 2 < argc) {
+      if (!set_operation(opts, ForgeOperation::PromoteTankToSubstrate)) return false;
+      opts->promote_tank_path = argv[++i];
+      opts->promote_substrate_path = argv[++i];
     } else if (a == "-h" || a == "--help") {
       print_usage();
       std::exit(0);
@@ -282,6 +348,17 @@ bool parse_args(int argc, char** argv, ForgeOptions* opts) {
   }
   if (opts->have_text && opts->from_postgres) {
     std::cerr << "choose either --text or --from-postgres\n";
+    return false;
+  }
+  if (opts->operation != ForgeOperation::EmitSubstrate &&
+      opts->operation != ForgeOperation::HashText &&
+      (opts->from_postgres || opts->stats_only || opts->print_stats ||
+       !opts->stats_out_path.empty())) {
+    std::cerr << "state operations cannot be combined with substrate emission flags\n";
+    return false;
+  }
+  if (opts->operation != ForgeOperation::EmitSubstrate && opts->have_out_path) {
+    std::cerr << "--out is only valid for substrate emission; state operations use ledger/tank paths or positional targets\n";
     return false;
   }
   return true;
@@ -448,6 +525,147 @@ void print_stats(const BuildStats& stats) {
             << "bucket_p99=" << stats.p99_bucket << '\n';
 }
 
+int write_marker_index_file(const char* path, const std::string& canon_utf8,
+                            const std::vector<Marker>& markers, uint64_t canon_xxh);
+
+void print_tank_result(const refinery_forge::TankOpResult& result) {
+  std::cout << "subject_hash=" << refinery_forge::refinery_hash_to_hex(result.subject_hash) << '\n'
+            << "event_id=" << refinery_forge::refinery_hash_to_hex(result.event_id) << '\n'
+            << "refutations_attempted=" << result.refutations_attempted << '\n'
+            << "distinct_refuters=" << result.distinct_refuters << '\n'
+            << "status=" << refinery_forge::refinery_tank_status_name(result.status) << '\n';
+}
+
+int check_tank_output_allowed(const std::string& tank_path) {
+  const std::string manifest = refinery_resolve_manifest_path(g_argv0);
+  if (!manifest.empty() && refinery_path_is_protected(tank_path, manifest)) {
+    std::cerr << "L-F-02 VIOLATION: target path " << tank_path
+              << " canonicalizes to a protected entry in " << manifest
+              << " — refusing entropy tank write. SILENCE.\n";
+    return 4;
+  }
+  return 0;
+}
+
+int run_state_operation(const ForgeOptions& opts) {
+  using namespace refinery_forge;
+
+  if (opts.operation == ForgeOperation::HashText) {
+    std::cout << refinery_hash_to_hex(refinery_hash_string(opts.text)) << '\n';
+    return 0;
+  }
+
+  std::string error;
+  const std::string ledger_path = refinery_resolve_ledger_path();
+  std::string tank_path = refinery_resolve_tank_path();
+  if (opts.operation == ForgeOperation::PromoteTankToSubstrate) {
+    tank_path = opts.promote_tank_path;
+  }
+
+  if (opts.operation == ForgeOperation::Witness ||
+      opts.operation == ForgeOperation::Refute ||
+      opts.operation == ForgeOperation::Reject ||
+      opts.operation == ForgeOperation::Evict) {
+    const int guard = check_tank_output_allowed(tank_path);
+    if (guard != 0) return guard;
+  }
+
+  TankOpResult result{};
+  if (opts.operation == ForgeOperation::Witness) {
+    const int rc = refinery_tank_witness(tank_path, ledger_path, opts.text, &result, &error);
+    if (rc == 0) print_tank_result(result);
+    else std::cerr << error << '\n';
+    return rc;
+  }
+
+  if (opts.operation == ForgeOperation::PromoteTankToSubstrate) {
+    std::vector<Hash128> hashes;
+    const int tank_rc = refinery_tank_promotable_hashes(tank_path, &hashes, &error);
+    if (tank_rc != 0) {
+      std::cerr << error << '\n';
+      return tank_rc;
+    }
+    std::vector<Marker> markers;
+    markers.reserve(hashes.size());
+    for (const Hash128& hash : hashes) {
+      Marker marker{};
+      marker.hash_id = hash;
+      marker.canon_offset = 0u;
+      marker.span_bytes = 13u;
+      marker.pad = 0u;
+      markers.push_back(marker);
+    }
+    std::sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) {
+      Hash128Cmp cmp;
+      return cmp(a.hash_id, b.hash_id);
+    });
+    const std::string canon = "tank-promoted";
+    const uint64_t canon_xxh = static_cast<uint64_t>(XXH64(canon.data(), canon.size(), 0));
+    const Hash128 subject_hash = refinery_hash_bytes(hashes.data(), hashes.size() * sizeof(Hash128));
+    const Hash128 evidence_hash = refinery_hash_string(opts.promote_substrate_path);
+    Hash128 promotion_event_id{};
+    const int ledger_rc = refinery_emit_ledger_entry(ledger_path, LEDGER_EVENT_PROMOTION,
+                                                     subject_hash, evidence_hash,
+                                                     &promotion_event_id, &error);
+    if (ledger_rc != 0) {
+      std::cerr << error << '\n';
+      return ledger_rc;
+    }
+    return write_marker_index_file(opts.promote_substrate_path.c_str(), canon, markers, canon_xxh);
+  }
+
+  Hash128 subject{};
+  if (!refinery_parse_hash(opts.subject_hash_text, &subject)) {
+    std::cerr << "invalid subject hash\n";
+    return 7;
+  }
+
+  if (opts.operation == ForgeOperation::Reject) {
+    const int rc = refinery_tank_reject(tank_path, ledger_path, subject, &result, &error);
+    if (rc == 0) print_tank_result(result);
+    else std::cerr << error << '\n';
+    return rc;
+  }
+
+  if (opts.operation == ForgeOperation::Refute) {
+    if (opts.evidence.empty()) {
+      std::cerr << "L-F-03: --refute requires --evidence\n";
+      return 7;
+    }
+    std::string refuter = opts.refuter_id;
+    if (refuter.empty()) {
+      const char* env = std::getenv("REFINERY_REFUTER_ID");
+      if (env && *env) refuter = env;
+    }
+    const int rc = refinery_tank_refute(tank_path, ledger_path, subject, opts.evidence,
+                                        refuter, opts.refutation_succeeds,
+                                        &result, &error);
+    if (rc == 0) print_tank_result(result);
+    else std::cerr << error << '\n';
+    return rc;
+  }
+
+  if (opts.operation == ForgeOperation::Evict) {
+    if (opts.refutation_event_id_text.empty()) {
+      std::cerr << "L-F-03: eviction requires --refutation-event-id back-reference; audit chain break refused\n";
+      return 7;
+    }
+    Hash128 refutation_event_id{};
+    if (!refinery_parse_hash(opts.refutation_event_id_text, &refutation_event_id)) {
+      std::cerr << "L-F-03: invalid refutation event id\n";
+      return 7;
+    }
+    const int rc = refinery_tank_evict(tank_path, ledger_path, subject,
+                                       refutation_event_id, &result, &error);
+    if (rc == 0) print_tank_result(result);
+    else std::cerr << error << '\n';
+    return rc;
+  }
+
+  std::cerr << "unknown state operation\n";
+  return 2;
+}
+
 /* L-F-02 guard: forge may stage candidate substrate files, but it must refuse
  * to overwrite any operator-declared live kernel substrate path. Exit code 4
  * is reserved for protected-path refusal. */
@@ -607,6 +825,10 @@ int main(int argc, char** argv) {
   }
 
   try {
+    if (opts.operation != ForgeOperation::EmitSubstrate) {
+      return run_state_operation(opts);
+    }
+
     const CanonBuildResult canon = load_canon(opts);
     const auto words = tokenize_canon(canon.canon_utf8);
     if (words.size() < REFINERY_WINDOW_WORDS) {

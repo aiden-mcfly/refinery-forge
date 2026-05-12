@@ -7,7 +7,8 @@ cd "$ROOT"
 mkdir -p build
 clang -std=c11 -O2 -c third_party/xxhash/xxhash.c -I third_party/xxhash -o build/xxhash.o
 clang++ -std=c++20 -O2 -Wall -Wextra -I include -I third_party/xxhash \
-  src/forge/bitmask_generator.cpp build/xxhash.o -o build/refinery-forge
+  src/forge/bitmask_generator.cpp src/forge/ledger.cpp src/forge/tank.cpp \
+  build/xxhash.o -o build/refinery-forge
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 ./build/refinery-forge --out "$TMP"

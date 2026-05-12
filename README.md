@@ -7,7 +7,8 @@ Tooling that **extracts** legacy probabilistic substrate (Postgres, JSON, float 
 ```bash
 clang -std=c11 -O2 -c third_party/xxhash/xxhash.c -I third_party/xxhash -o build/xxhash.o
 clang++ -std=c++20 -O2 -I include -I third_party/xxhash \
-  src/forge/bitmask_generator.cpp build/xxhash.o -o build/refinery-forge
+  src/forge/bitmask_generator.cpp src/forge/ledger.cpp src/forge/tank.cpp \
+  build/xxhash.o -o build/refinery-forge
 ./build/refinery-forge --out marker.bin
 ```
 
@@ -24,6 +25,32 @@ found; protected-path check skipped` warning and proceeds. Protection is deploy-
 `REFINERY_SUBSTRATE_MANIFEST`, `./.active-substrate-paths`, `./refinery-core/.active-substrate-paths`,
 or the executable-relative sibling fallback.
 
+## Evidence ledger and entropy tank
+
+State-changing operations require an evidence ledger path and an entropy tank path.
+Use `REFINERY_EVIDENCE_LEDGER` / `REFINERY_ENTROPY_TANK`, or copy the core repo
+examples to `refinery-core/.evidence-ledger-path` and `refinery-core/.entropy-tank-path`.
+The ledger is deterministic binary evidence; the tank is forge-owned producer storage.
+Core never reads either artifact at runtime. `--promote-tank-to-substrate` currently
+emits an identity-only substrate artifact for direct `Hash128` lookup; it is not a
+normal ingress-spectroscopy mesh over witness text.
+
+```bash
+export REFINERY_EVIDENCE_LEDGER=~/.config/refinery/evidence-ledger
+export REFINERY_ENTROPY_TANK=~/.config/refinery/entropy-tank
+
+./build/refinery-forge --witness "candidate signal"
+SUBJECT=$(./build/refinery-forge --hash-text "candidate signal")
+./build/refinery-forge --reject "$SUBJECT"
+REFINERY_REFUTER_ID=refuter-A ./build/refinery-forge --refute "$SUBJECT" --evidence "challenge one"
+REFINERY_REFUTER_ID=refuter-B ./build/refinery-forge --refute "$SUBJECT" --evidence "challenge two"
+./build/refinery-forge --promote-tank-to-substrate "$REFINERY_ENTROPY_TANK" promoted.marker.bin
+```
+
+Return codes: `4` protected path refusal, `5` evidence-ledger failure, `6` tank failure,
+`7` invalid refutation/evidence request, `8` promotion blocked by insufficient refutation
+coverage.
+
 ## Postgres extraction and evidence
 
 When built with `libpq`, Forge can extract the canon directly from selah's `scripture_verses`
@@ -38,7 +65,7 @@ clang++ -std=c++20 -O2 -Wall -Wextra \
   -DREFINERY_HAVE_LIBPQ=1 \
   -I include -I third_party/xxhash \
   -I /opt/homebrew/opt/libpq/include \
-  src/forge/bitmask_generator.cpp build/xxhash.o \
+  src/forge/bitmask_generator.cpp src/forge/ledger.cpp src/forge/tank.cpp build/xxhash.o \
   -L /opt/homebrew/opt/libpq/lib -lpq \
   -o build/refinery-forge
 ```

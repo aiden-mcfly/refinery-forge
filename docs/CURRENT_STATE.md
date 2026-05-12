@@ -1,8 +1,8 @@
 # Refinery-forge — current state (architecture and flow)
 
-This document describes **what refinery-forge does today**: building **v1 marker-index** `.bin` substrates from embedded demo text, `--text`, or (optional **`libpq`**) Selah Postgres, plus **L-F-02** protected-path enforcement before write. It is a companion to [`SUBSTRATE-LAYOUT.md`](SUBSTRATE-LAYOUT.md), [`FORGE-POSTGRES.md`](FORGE-POSTGRES.md), [`README.md`](../README.md), and the **byte-identical** shared header [`include/refinery/substrate_interface.h`](../include/refinery/substrate_interface.h) (must match **refinery-core**).
+This document describes **what refinery-forge does today**: building **v1 marker-index** `.bin` substrates from embedded demo text, `--text`, or (optional **`libpq`**) Selah Postgres; enforcing **L-F-02** protected paths; and owning the **L-R-01 evidence ledger** plus **L-F-03 entropy tank** producer surfaces. It is a companion to [`SUBSTRATE-LAYOUT.md`](SUBSTRATE-LAYOUT.md), [`FORGE-POSTGRES.md`](FORGE-POSTGRES.md), [`README.md`](../README.md), and the byte-identical shared headers in `include/refinery/` (must match **refinery-core**).
 
-**Law / gate context:** Mechanical enforcement for hash parity, pinned third_party, shared header identity, and related probes lives in **refinery-core** [`scripts/refinery-gate.sh`](../../refinery-core/scripts/refinery-gate.sh) (invoked from this repo’s **pre-commit** when configured). Forge implements **forge-local** rules such as **L-F-02** (protected substrate paths) in code here.
+**Law / gate context:** Mechanical enforcement for hash parity, pinned third_party, shared header identity, evidence ledger replay, entropy tank transitions, and related probes lives in **refinery-core** [`scripts/refinery-gate.sh`](../../refinery-core/scripts/refinery-gate.sh). Forge implements producer-side rules such as **L-F-02** (protected substrate paths), **L-R-01** (ledger), and **L-F-03** (tank) in code here.
 
 **E-51.G16 / L-K-03 (refinery-core only):** Event **G16** ratified law **L-K-03** (“kernel does not adapt at runtime”) by adding **gate-only** scanning of **`refinery-core/src/kernel/*.c`** for disallowed mutable **`static`** storage, with allow-list comments where needed. **Forge is not in the L-K-03 enforcement set** — the assignment scopes **Unit B (refinery-forge) as no-op**: **zero** G16-required edits here; forge is an **ingress producer**, not the mmap/router **kernel**. Operator-visible forge behavior is unchanged by G16; full-mode gate runs may still execute a **libpq-linked** forge binary built under **refinery-core** (e.g. **`build-auto/`**) without altering this repo. See **refinery-core** [`docs/E-51-G16-LK03-NO-RUNTIME-ADAPTATION-ASSIGNMENT.md`](../../refinery-core/docs/E-51-G16-LK03-NO-RUNTIME-ADAPTATION-ASSIGNMENT.md).
 
@@ -13,11 +13,13 @@ This document describes **what refinery-forge does today**: building **v1 marker
 | In scope | Out of scope |
 |----------|----------------|
 | **Write** lawful v1 `.bin` files (header + sorted `Marker[]` + canon blob) | mmap validation, ingress spectroscopy, Terminus (**refinery-core**) |
+| **Promote** tank state into an identity-only substrate artifact | assuming promoted markers are ingress-spectroscopy-reachable witness windows |
 | **Golden path**: embedded default canon or `--text` | Training models, scoring LLMs |
 | **Optional Postgres**: read **`scripture_verses`** via **`SELAH_DATABASE_URL`** only | Generic **`DATABASE_URL`** / **Aiden** tenant URLs |
 | **L-F-02**: refuse overwrite when output canonical path matches operator manifest | Changing kernel runtime behavior |
+| **L-R-01 / L-F-03**: evidence ledger + entropy tank state operations | Core runtime reads of ledger/tank artifacts |
 
-Single implementation unit: **`src/forge/bitmask_generator.cpp`** → **`refinery-forge`** binary. **xxHash** (**XXH64** canon seal, **XXH3_128** window identity) via **`third_party/xxhash/`**.
+Implementation units: **`src/forge/bitmask_generator.cpp`**, **`src/forge/ledger.cpp`**, and **`src/forge/tank.cpp`** → **`refinery-forge`** binary. **xxHash** (**XXH64** canon seal, **XXH3_128** window identity) via **`third_party/xxhash/`**.
 
 ---
 
@@ -174,7 +176,9 @@ flowchart LR
 | Area | Files |
 |------|--------|
 | Forge CLI + pipeline + L-F-02 | [`src/forge/bitmask_generator.cpp`](../src/forge/bitmask_generator.cpp) |
-| Shared v1 contract | [`include/refinery/substrate_interface.h`](../include/refinery/substrate_interface.h) |
+| Evidence ledger | [`src/forge/ledger.cpp`](../src/forge/ledger.cpp) |
+| Entropy tank | [`src/forge/tank.cpp`](../src/forge/tank.cpp) |
+| Shared v1 contracts | `include/refinery/substrate_interface.h`, `ledger_interface.h`, `tank_interface.h` |
 | xxHash | [`third_party/xxhash/`](../third_party/xxhash/) |
 | Build (optional libpq) | [`CMakeLists.txt`](../CMakeLists.txt) |
 | Golden parity script | [`scripts/verify-golden.sh`](../scripts/verify-golden.sh) |
@@ -191,6 +195,7 @@ flowchart LR
 |------|--------|
 | Build (no DB) | [`README.md`](../README.md) clang recipe or CMake without Postgres |
 | Build + Postgres | Define **`REFINERY_HAVE_LIBPQ`**, link **`libpq`**, set **`SELAH_DATABASE_URL`** |
+| Evidence/tank operation | Set **`REFINERY_EVIDENCE_LEDGER`** and **`REFINERY_ENTROPY_TANK`**, or install **`refinery-core/.evidence-ledger-path`** and **`refinery-core/.entropy-tank-path`**, then use `--witness`, `--refute`, `--reject`, `--evict`, or `--promote-tank-to-substrate` |
 | Verify golden unchanged | **`./scripts/verify-golden.sh`** from repo root |
 | Full gate + DB snapshot | Run **refinery-core** **`./scripts/refinery-gate.sh --full`** with **`REFINERY_FORGE_BIN`** pointing at libpq forge (see core docs) |
 
@@ -205,7 +210,7 @@ Language below is **operator-oriented**: follow steps in order unless noted opti
 1. Open a shell at the **refinery-forge** repository root (directory containing **`include/`**, **`src/forge/`**, **`third_party/xxhash/`**).
 2. Create a build directory: **`mkdir -p build`**.
 3. Compile xxHash: **`clang -std=c11 -O2 -c third_party/xxhash/xxhash.c -I third_party/xxhash -o build/xxhash.o`**.
-4. Compile and link forge: use the **`clang++`** line from [`README.md`](../README.md) **Golden path** that includes **`src/forge/bitmask_generator.cpp`** and **`build/xxhash.o`**, output **`build/refinery-forge`** (or another path you prefer).
+4. Compile and link forge: use the **`clang++`** line from [`README.md`](../README.md) **Golden path** that includes **`src/forge/bitmask_generator.cpp`**, **`src/forge/ledger.cpp`**, **`src/forge/tank.cpp`**, and **`build/xxhash.o`**, output **`build/refinery-forge`** (or another path you prefer).
 5. Confirm the binary runs: **`./build/refinery-forge --help`** (usage printed, exit **0**).
 
 ### 10.2 Write a `.bin` using the **embedded default canon** (no `--text`, no DB)

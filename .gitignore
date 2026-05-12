@@ -3,4 +3,8 @@
 /.cache
 *.o
 /refinery-forge
+.evidence-ledger-path
+.entropy-tank-path
+.evidence-ledger
+.entropy-tank
 .DS_Store
