@@ -199,6 +199,9 @@ bool parse_args(int argc, char** argv, ForgeOptions* opts) {
                  "state operations use ledger/tank paths or positional targets\n";
     return false;
   }
+  if (opts->from_postgres && !opts->have_out_path) {
+    opts->out_path = "canon.marker.bin";
+  }
   return true;
 }
 

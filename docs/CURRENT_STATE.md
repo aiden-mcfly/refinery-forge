@@ -257,7 +257,7 @@ Language below is **operator-oriented**: follow steps in order unless noted opti
 1. Install development headers/libs for **libpq** (paths vary by OS; [`README.md`](../README.md) shows **Homebrew**-style **`-I`** / **`-L`** flags).
 2. Rebuild forge with **`REFINERY_HAVE_LIBPQ=1`** and link **`-lpq`**, producing a binary that includes **`load_canon_from_postgres`** (see README **Postgres** section).
 3. Store **`SELAH_DATABASE_URL`** in a **chmod-600** env file; **`source`** it in your shell (**`set -a; source …; set +a`**) — do not paste credentials into git or logs.
-4. Run forge with **`--from-postgres`**, e.g. **`./build/refinery-forge --from-postgres --limit 512 --out ./golden-set.marker.bin --stats --stats-out ./golden-set.stats.json`** (adjust **`--limit`**, paths, and flags).
+4. Run forge with **`--from-postgres`**, e.g. **`./build/refinery-forge --from-postgres --stats`** (defaults output to **`canon.marker.bin`** in the working directory; override with **`--out path`**). Add **`--limit N`** for a partial corpus, **`--stats-out path.json`** for JSON.
 5. **`unset SELAH_DATABASE_URL`** (or exit the shell) when finished so the secret is not left in the environment.
 6. If **`SELAH_DATABASE_URL`** is unset, forge throws and exits **1**. If marker count would exceed **`REFINERY_MAX_MARKERS`**, forge exits **3** (SILENCE) and does not write an oversized **`.bin`**.
 

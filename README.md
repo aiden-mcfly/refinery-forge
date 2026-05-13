@@ -14,7 +14,7 @@ clang++ -std=c++20 -O2 -I include -I third_party/xxhash \
 ```
 
 After changing tokenizer or header constants, confirm parity: `./scripts/verify-golden.sh`
-(rebuilds forge and compares `golden.marker.bin` to the default embedded canon).
+(rebuilds forge and compares `golden.marker.bin` to the default embedded canon). If `golden.marker.bin` is missing at the repo root, copy the canonical file from a sibling checkout: `cp ../refinery-core/test/testdata/golden/golden.marker.bin ./golden.marker.bin`
 
 Options: `--out <path>`, `--text "<utf-8 canon>"` (must yield at least seven tokens per
 `refinery_word_byte()` in `include/refinery/substrate_interface.h`).
@@ -85,14 +85,13 @@ Run (read SELAH_DATABASE_URL from a chmod-600 file, never inline):
 
 ```bash
 set -a; source ~/.config/selah/db.env; set +a   # contents: SELAH_DATABASE_URL=...
-./build/refinery-forge \
-  --from-postgres \
-  --limit 512 \
-  --out golden-set.marker.bin \
-  --stats \
-  --stats-out golden-set.stats.json
+./build/refinery-forge --from-postgres --stats
 unset SELAH_DATABASE_URL
 ```
+
+Without `--out`, `--from-postgres` defaults to **`canon.marker.bin`** in the working directory.
+Override with `--out path` for a custom location. Add `--limit N` for a partial corpus,
+`--stats-out path.json` for JSON stats.
 
 Default SQL:
 
