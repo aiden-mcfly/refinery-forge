@@ -129,7 +129,7 @@ sequenceDiagram
 
 ### 5.1 Embedded golden (default)
 
-If neither **`--text`** nor **`--from-postgres`**, forge uses a fixed **`kGoldenCanon`** string in **`bitmask_generator.cpp`**. The tracked artifact **`golden.marker.bin`** must match a forge build writing that canon; **`scripts/verify-golden.sh`** rebuilds and **`cmp`s** against **`golden.marker.bin`**.
+If neither **`--text`** nor **`--from-postgres`**, forge uses a fixed **`kGoldenCanon`** string in **`bitmask_generator.cpp`**. The tracked artifact **`golden.marker.bin`** should match a forge build writing that canon; **`scripts/verify-golden.sh`** rebuilds and **`cmp`s** against **`golden.marker.bin`** (standalone parity fixture, not a PAT gate requirement).
 
 ### 5.2 `--text`
 
@@ -197,7 +197,7 @@ flowchart LR
 | Shared v1 contracts | `include/refinery/substrate_interface.h`, `ledger_interface.h`, `tank_interface.h` |
 | xxHash | [`third_party/xxhash/`](../third_party/xxhash/) |
 | Build (optional libpq) | [`CMakeLists.txt`](../CMakeLists.txt) |
-| Golden parity script | [`scripts/verify-golden.sh`](../scripts/verify-golden.sh) |
+| Golden parity script (standalone) | [`scripts/verify-golden.sh`](../scripts/verify-golden.sh) |
 | Layout reference | [`docs/SUBSTRATE-LAYOUT.md`](SUBSTRATE-LAYOUT.md) |
 | Postgres / Selah | [`docs/FORGE-POSTGRES.md`](FORGE-POSTGRES.md) |
 | Operator README | [`README.md`](../README.md) |
@@ -212,7 +212,7 @@ flowchart LR
 | Build (no DB) | [`README.md`](../README.md) clang recipe or CMake without Postgres |
 | Build + Postgres | Define **`REFINERY_HAVE_LIBPQ`**, link **`libpq`**, set **`SELAH_DATABASE_URL`** |
 | Evidence/tank operation | Set **`REFINERY_EVIDENCE_LEDGER`** and **`REFINERY_ENTROPY_TANK`**, or install **`refinery-core/.evidence-ledger-path`** and **`refinery-core/.entropy-tank-path`**, then use `--witness`, `--refute`, `--reject`, `--evict`, or `--promote-tank-to-substrate` |
-| Verify golden unchanged | **`./scripts/verify-golden.sh`** from repo root |
+| Verify golden unchanged (optional) | **`./scripts/verify-golden.sh`** from repo root |
 | Full gate + DB snapshot | Run **refinery-core** **`./scripts/refinery-gate.sh --full`** with **`REFINERY_FORGE_BIN`** and **`SELAH_DATABASE_URL`**; offline baseline is **`PASS : 40`** (see **§10.10**) |
 
 ---
@@ -245,7 +245,7 @@ Language below is **operator-oriented**: follow steps in order unless noted opti
 4. If the text has too few tokens, forge prints an error and exits **2**.
 5. On success, exit **0** and **`custom.marker.bin`** reflects that canon’s markers and **`canon_xxh64`**.
 
-### 10.4 Confirm **`golden.marker.bin`** matches the repo fixture
+### 10.4 Confirm **`golden.marker.bin`** matches the repo fixture (standalone, not PAT)
 
 1. Complete **§10.1** (or ensure **`build/refinery-forge`** exists and matches current sources).
 2. From the repository root, run **`./scripts/verify-golden.sh`**.

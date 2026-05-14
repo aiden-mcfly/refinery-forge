@@ -8,4 +8,4 @@ This agent is locked to `/Users/ak/Desktop/repo/refinery-forge`.
 
 ## OPP-51 PAT (product acceptance)
 
-PAT mechanical checks that touch the gate live in sibling **`refinery-core`** (`scripts/refinery-gate.sh`); law and evidence rules are in that repo’s **`LAWS.md`** under **Executable gate** and **PAT evidence (OPP-51)**. For PAT-A3, `scripts/verify-golden.sh` expects **`golden.marker.bin`** at this repo’s **root** — canonical bytes are in `refinery-core/test/testdata/golden/golden.marker.bin` when repos are checked out side by side (see README). Editing `refinery-core` in the same task requires an explicit same-turn reauthorization beyond this scope lock.
+PAT mechanical checks that touch the gate live in sibling **`refinery-core`** (`scripts/refinery-gate.sh`); law and evidence rules are in that repo's **`LAWS.md`** under **Executable gate** and **PAT evidence (OPP-51)**. Editing `refinery-core` in the same task requires an explicit same-turn reauthorization beyond this scope lock.
